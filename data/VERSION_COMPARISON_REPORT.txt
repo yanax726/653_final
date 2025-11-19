@@ -1,0 +1,116 @@
+================================================================================
+ECLS-K LONG FORMAT DATA: VERSION COMPARISON REPORT
+================================================================================
+
+TWO VERSIONS CREATED:
+
+1. FLEXIBLE VERSION (data/ecls_long_FLEXIBLE.csv)
+   - Includes variables if they exist in waves 2 OR 4 OR 9
+   - 54,522 rows × 52 columns
+   - 38 time-varying variables
+   - Some variables may have missing data in wave 9
+   - USE THIS for maximum variable coverage
+
+2. COMPLETE VERSION (data/ecls_long_COMPLETE.csv)
+   - ONLY includes variables that exist in ALL waves 2 AND 4 AND 9
+   - 54,522 rows × 41 columns
+   - 27 time-varying variables
+   - All variables have data structure for all 3 waves
+   - USE THIS for balanced longitudinal analysis
+
+================================================================================
+VARIABLES IN FLEXIBLE VERSION (2 OR 4 OR 9)
+================================================================================
+
+  age                            waves: 2
+  attention                      waves: 2, 4, 9
+  bmi                            waves: 2, 4, 9
+  disability                     waves: 2, 4, 9
+  fs_adult_raw                   waves: 2, 4, 9
+  fs_adult_scale                 waves: 2, 4, 9
+  fs_adult_status                waves: 2, 4, 9
+  fs_child_raw                   waves: 2, 4, 9
+  fs_child_scale                 waves: 2, 4, 9
+  fs_child_status                waves: 2, 4, 9
+  fs_raw                         waves: 2, 4, 9
+  fs_scale                       waves: 2, 4, 9
+  fs_status                      waves: 2, 4, 9
+  height                         waves: 2, 4, 9
+  household_size                 waves: 2, 4, 9
+  income_category                waves: 2, 4, 9
+  inhibitory_control             waves: 2, 4, 9
+  locale                         waves: 2, 4, 9
+  math_score                     waves: 2, 4, 9
+  parent1_ed                     waves: 2, 4, 9
+  parent1_emp                    waves: 2, 4, 9
+  parent2_ed                     waves: 2, 4, 9
+  parent2_emp                    waves: 2, 4, 9
+  parents_home                   waves: 2, 4
+  school_enrollment              waves: 2, 4, 9
+  school_id                      waves: 2, 4, 9
+  school_type                    waves: 2, 4, 9
+  science_score                  waves: 2, 4, 9
+  ses                            waves: 4, 9
+  tch_approaches                 waves: 2, 4
+  tch_closeness                  waves: 2, 4
+  tch_conflict                   waves: 2, 4
+  tch_externalizing              waves: 2, 4
+  tch_internalizing              waves: 2, 4
+  tch_selfcontrol                waves: 2, 4
+  weight                         waves: 2, 4, 9
+  weight_longitudinal            waves: 4, 9
+  weight_parent                  waves: 2
+
+================================================================================
+VARIABLES IN COMPLETE VERSION (2 AND 4 AND 9)
+================================================================================
+
+  attention
+  bmi
+  disability
+  fs_adult_raw
+  fs_adult_scale
+  fs_adult_status
+  fs_child_raw
+  fs_child_scale
+  fs_child_status
+  fs_raw
+  fs_scale
+  fs_status
+  height
+  household_size
+  income_category
+  inhibitory_control
+  locale
+  math_score
+  parent1_ed
+  parent1_emp
+  parent2_ed
+  parent2_emp
+  school_enrollment
+  school_id
+  school_type
+  science_score
+  weight
+
+================================================================================
+VARIABLES ONLY IN FLEXIBLE (MISSING FROM COMPLETE)
+================================================================================
+
+  age                            (only in waves: 2)
+  parents_home                   (only in waves: 2, 4)
+  ses                            (only in waves: 4, 9)
+  tch_approaches                 (only in waves: 2, 4)
+  tch_closeness                  (only in waves: 2, 4)
+  tch_conflict                   (only in waves: 2, 4)
+  tch_externalizing              (only in waves: 2, 4)
+  tch_internalizing              (only in waves: 2, 4)
+  tch_selfcontrol                (only in waves: 2, 4)
+  weight_longitudinal            (only in waves: 4, 9)
+  weight_parent                  (only in waves: 2)
+
+================================================================================
+ALTERNATIVES FOUND
+================================================================================
+
+  (none found)

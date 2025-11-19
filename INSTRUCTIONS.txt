@@ -1,0 +1,90 @@
+# zwx详读
+
+## Dataset to Use:
+This has 54,522 rows (18,174 children × 3 waves) with all variables cleaned and ready.
+
+## Variables Available:
+
+**IDs:** childid, wave, time (0,1,2 for GEE)
+
+**Outcomes:**
+- math, science (IRT scores)
+- tch_approaches, tch_control, tch_external, tch_internal (teacher ratings, waves 2-4 only)
+
+**Food Security (predictor):**
+- fs_scale, fs_status, fs_raw (continuous & categorical)
+- fs_baseline, fs_change, fs_cumulative (derived variables for your GEE model)
+
+**Mediator:**
+- tch_close, tch_conflict, tch_quality (waves 2-4 only)
+
+**Controls:**
+- x_chsex_r, X_RACETHP_R (demographics)
+- x12sesl, ses, ses_q (SES - baseline, time-varying, quartiles for moderation)
+- par1_ed, par2_ed, n_parents, hh_size (family)
+- school_type, urbanicity, school_size (school)
+
+### FLEXIBLE (2 OR 4 OR 9)
+**File**: `/Desktop/653_final/data/ecls_long_FLEXIBLE.csv`
+- 54,522 rows × 52 columns
+- 38 time-varying variables
+- **Includes** teacher variables (waves 2,4 only - not in wave 9)
+- **USE THIS** - Has all variables from your proposal including mediator
+
+### COMPLETE (2 AND 4 AND 9)
+**File**: `/Desktop/653_final/data/ecls_long_COMPLETE.csv`
+- 54,522 rows × 41 columns
+- 27 time-varying variables
+- **Excludes** teacher variables (not available wave 9)
+- Perfectly balanced - all vars have data structure for all 3 waves
+
+### CLEANED (Based on FLEXIBLE + Derived Variables)
+**File**: `/Desktop/653_final/data/ecls_clean.csv`
+- 54,522 rows × 57 columns
+- Same as FLEXIBLE but with:
+  - Missing codes cleaned (-1,-6,-7,-8,-9 → NA)
+  - Derived variables: fs_baseline, fs_change, fs_cumulative, tch_quality, ses_q, time
+- **USE THIS FOR GEE**
+
+## Some Results（from AI）:
+
+**Sample Sizes**:
+- Wave 2: 12,494 with both FS & math (68.7%)
+- Wave 4: 11,841 with both FS & math (65.1%)
+- Wave 9: 8,528 with both FS & math (46.9%)
+
+**Food Security Prevalence** (among those with data):
+- Wave 2: 87.5% secure, 9.7% low, 2.9% very low
+- Wave 4: 88.6% secure, 8.6% low, 2.8% very low
+- Wave 9: 92.2% secure, 5.7% low, 2.1% very low
+→ Food insecurity **decreases** over time
+
+**Math Growth** (mean ± SD):
+- Wave 2 (K): 49.9 ± 13.3
+- Wave 4 (1st): 72.3 ± 15.7
+- Wave 9 (5th): 120.0 ± 17.8
+→ Clear **linear growth** pattern
+
+**Variables
+- [x] Food security (continuous & categorical) - **YES** (fs_scale, fs_status)
+- [x] Food security change - **YES** (fs_baseline, fs_change, fs_cumulative)
+- [x] Math scores - **YES** (waves 2,4,9)
+- [ ] Reading scores - **NO** (not in source data - use science instead)
+- [x] Teacher socioemotional - **YES** (tch_approaches, tch_control, etc.)
+- [x] Teacher-child relationship - **YES** (tch_close, tch_conflict, tch_quality)
+- [x] SES controls - **YES** (x12sesl baseline, ses time-varying, ses_q quartiles)
+- [x] Demographics - **YES** (sex, race, age)
+- [x] Parent education - **YES** (par1_ed, par2_ed)
+- [x] School characteristics - **YES** (school_type, urbanicity, school_size)
+
+** Model fitting infromation
+**Dataset**: `ecls_clean.csv`
+**Key variables**:
+- ID: `childid`
+- Time: `time` (0,1,2 for GEE)
+- Outcome: `math` or `science`
+- Predictor: `fs_scale` (continuous) or `fs_status` (categorical)
+- Change vars: `fs_baseline`, `fs_change`, `fs_cumulative`
+- Mediator: `tch_quality` (waves 2,4 only)
+- Moderation: `ses_q` (quartiles)
+- Controls: `x_chsex_r`, `X_RACETHP_R`, `x12sesl`

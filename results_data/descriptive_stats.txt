@@ -1,0 +1,32 @@
+Sample sizes:
+# A tibble: 3 × 5
+   wave total has_fs has_math  both
+  <dbl> <int>  <int>    <int> <int>
+1     2 18174  12910    17143 12494
+2     4 18174  12313    15103 11841
+3     9 18174   9308    11426  8528
+
+
+Food security prevalence:
+# A tibble: 9 × 4
+# Groups:   wave [3]
+   wave fs_cat       n   pct
+  <dbl> <fct>    <int> <dbl>
+1     2 Secure   11292 87.5 
+2     2 Low       1249  9.67
+3     2 Very Low   369  2.86
+4     4 Secure   10911 88.6 
+5     4 Low       1059  8.60
+6     4 Very Low   343  2.79
+7     9 Secure    8583 92.2 
+8     9 Low        526  5.65
+9     9 Very Low   199  2.14
+
+
+Math scores by wave:
+# A tibble: 3 × 4
+   wave     n  mean    sd
+  <dbl> <int> <dbl> <dbl>
+1     2 17143  49.9  13.3
+2     4 15103  72.3  15.7
+3     9 11426 120.   17.8
