@@ -1,0 +1,796 @@
+---
+title: "Household Food Insecurity and Children's Development: A Longitudinal GEE Analysis"
+author: "Wenxuan Zhu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  dpi = 300,
+  cache = FALSE
+)
+```
+
+# 1. Executive Summary
+
+This analysis examines how changes in household food security from kindergarten through 5th grade predict children's academic achievement (mathematics and science) and socioemotional development using data from the Early Childhood Longitudinal Study, Kindergarten Class of 2010-11 (ECLS-K:2011).
+
+**Key Research Question:** How do changes in household food security status predict growth in academic achievement and do these associations vary by family socioeconomic status?
+
+**Analytic Approach:** Generalized Estimating Equations (GEE) with robust standard errors to model population-averaged effects of food security on child outcomes over three waves (Spring Kindergarten [Wave 2], Spring 1st Grade [Wave 4], and Spring 5th Grade [Wave 9]).
+
+---
+
+# 2. Setup and Data Preparation
+
+```{r}
+library(data.table)
+
+# GEE analysis - using geepack (more stable than geeM)
+library(geepack)
+library(tidyverse)
+
+suppressPackageStartupMessages({
+  if(require("broom", quietly = TRUE)) library(broom)
+  if(require("knitr", quietly = TRUE)) library(knitr)
+})
+
+options(scipen = 999)  # Avoid scientific notation
+set.seed(653)  
+```
+
+```{r load-data}
+data_path <- "~/Documents/GitHub/653_final/data/ecls_long_COMPLETE.csv"
+ecls_raw <- fread(data_path, na.strings = c("", "NA", "-1", "-2", "-6", "-7", "-8", "-9"))
+
+cat("Total observations:", nrow(ecls_raw), "\n")
+cat("Number of variables:", ncol(ecls_raw), "\n")
+cat("Number of unique children:", length(unique(ecls_raw$childid)), "\n")
+cat("Waves available:", paste(sort(unique(ecls_raw$wave)), collapse=", "), "\n")
+cat("\nFirst few variable names:\n")
+print(names(ecls_raw))
+```
+
+## Data Cleaning
+
+```{r data-cleaning}
+ecls <- ecls_raw[, .(
+  childid = childid,
+  wave = wave,
+  
+  # time variable (0, 1, 2)
+  time = fcase(
+    wave == 2, 0,  # Spring Kindergarten (baseline)
+    wave == 4, 1,  # Spring 1st Grade
+    wave == 9, 2,  # Spring 5th Grade
+    default = NA_real_
+  ),
+  
+  # Outcomes
+  math = math_score,
+  science = science_score,
+  
+  # Food security variables
+  fs_raw = fs_raw,
+  fs_scale = fs_scale,
+  fs_status = fs_status,
+  
+  # Demographics (time-invariant)
+  sex = x_chsex_r,
+  race = X_RACETHP_R,
+  
+  # SES (baseline)
+  ses_baseline = x12sesl,
+  
+  # Parent education
+  parent1_ed = parent1_ed,
+  parent2_ed = parent2_ed,
+  
+  # School characteristics
+  school_type = school_type,
+  urbanicity = locale,
+  
+  # Additional controls
+  household_size = household_size,
+  disability = disability
+)]
+
+# Clean missing codes
+
+# Handle food security scale scores
+# -6 represents food secure (no items affirmed), not missing
+# Recode to minimum valid value or create indicator
+ecls[fs_scale == -6, fs_scale := 1.4]  # Most conservative: assign lowest valid value
+# NOW remove actual missing codes (< -6)
+ecls[fs_scale < -6, fs_scale := NA_real_]  # Only removes -7, -8, -9, etc.
+
+ecls[fs_raw < 0, fs_raw := NA_real_]
+ecls[math < 0 | is.na(math), math := NA_real_]
+ecls[science < 0 | is.na(science), science := NA_real_]
+
+
+# Baseline food security variable (wave 2 value for each child)
+ecls[, fs_baseline := fs_scale[wave == 2][1], by = childid]
+ecls[, fs_status_baseline := fs_status[wave == 2][1], by = childid]
+
+# If a child has no wave 2, use their first available FS value as baseline
+ecls[is.na(fs_baseline), fs_baseline := fs_scale[!is.na(fs_scale)][1], by = childid]
+ecls[is.na(fs_status_baseline), fs_status_baseline := fs_status[!is.na(fs_status)][1], by = childid]
+
+# Food security change variable (current - baseline)
+ecls[, fs_change := fs_scale - fs_baseline]
+
+
+# Cumulative exposure variable (count of waves with low/very low FS)
+ecls[, fs_insecure := as.numeric(fs_status %in% c(2, 3))]  # 1 if insecure
+ecls[, fs_cumulative := cumsum(replace(fs_insecure, is.na(fs_insecure), 0)), by = childid]
+
+# Create SES quartiles for moderation analysis
+ecls[, ses_quartile := cut(ses_baseline, 
+                            breaks = quantile(ses_baseline, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE),
+                            labels = c("Q1_Lowest", "Q2", "Q3", "Q4_Highest"),
+                            include.lowest = TRUE)]
+
+# Convert categorical variables to factors
+# Note: Data already has string labels, so we clean and simplify
+ecls[, sex := gsub(":.*", "", sex)]  # Extract "1" or "2" 
+ecls[sex == "1", sex := "Male"]
+ecls[sex == "2", sex := "Female"]
+ecls[, sex := factor(sex, levels = c("Male", "Female"))]
+
+ecls[, fs_status_factor := factor(fs_status, levels = 1:3, 
+                                   labels = c("High/Marginal", "Low", "Very Low"))]
+
+ecls[, disability_clean := gsub(":.*", "", disability)]
+ecls[disability_clean == "1", disability_clean := "Yes"]
+ecls[disability_clean == "2", disability_clean := "No"]
+ecls[, disability := factor(disability_clean, levels = c("Yes", "No"))]
+ecls[, disability_clean := NULL]
+
+# Sort
+setorder(ecls, childid, time)
+
+cat("\n", rep("=", 80), "\n", sep="")
+cat("DATA PREPARATION COMPLETE\n")
+cat(rep("=", 80), "\n", sep="")
+cat("Observations after cleaning:", nrow(ecls), "\n")
+cat("Children with at least one observation:", uniqueN(ecls$childid), "\n")
+```
+
+```{r descriptive-stats}
+# Sample sizes by wave
+sample_sizes <- ecls[, .(
+  n_children = uniqueN(childid),
+  n_with_math = sum(!is.na(math)),
+  n_with_science = sum(!is.na(science)),
+  n_with_fs = sum(!is.na(fs_scale)),
+  pct_complete = round(100 * sum(!is.na(math) & !is.na(fs_scale)) / uniqueN(childid), 1)
+), by = wave]
+
+print(kable(sample_sizes, caption = "Sample Sizes by Wave", digits = 1))
+
+# Outcome means by wave
+outcome_means <- ecls[, .(
+  Math_Mean = round(mean(math, na.rm = TRUE), 2),
+  Math_SD = round(sd(math, na.rm = TRUE), 2),
+  Science_Mean = round(mean(science, na.rm = TRUE), 2),
+  Science_SD = round(sd(science, na.rm = TRUE), 2),
+  FS_Scale_Mean = round(mean(fs_scale, na.rm = TRUE), 2),
+  FS_Scale_SD = round(sd(fs_scale, na.rm = TRUE), 2)
+), by = wave]
+
+cat("\n")
+print(kable(outcome_means, caption = "Outcome Variables by Wave", digits = 2))
+
+# Food security status prevalence
+fs_prevalence <- ecls[!is.na(fs_status_factor), 
+  .(N = .N), 
+  by = .(wave, fs_status_factor)
+][, Percentage := round(100 * N / sum(N), 1), by = wave]
+
+cat("\n")
+print(kable(fs_prevalence, caption = "Food Security Status Distribution", digits = 1))
+
+# Baseline characteristics
+cat("\n\nBASELINE CHARACTERISTICS (Wave 2):\n")
+baseline <- ecls[wave == 2]
+cat("Sex:\n")
+print(table(baseline$sex, useNA = "ifany"))
+cat("\nSES Quartiles:\n")
+print(table(baseline$ses_quartile, useNA = "ifany"))
+cat("\nDisability:\n")
+print(table(baseline$disability, useNA = "ifany"))
+```
+
+---
+
+# 3. Primary GEE Analysis
+
+## Model Selection: Working Correlation Structure
+
+```{r correlation-structure}
+# Prepare data for GEE (complete cases for fair comparison)
+gee_data <- ecls[!is.na(math) & !is.na(fs_scale) & !is.na(time) & 
+                 !is.na(ses_baseline) & !is.na(sex) & !is.na(fs_baseline)]
+gee_data <- gee_data[order(childid, time)]
+
+# Test different correlation structures
+corstr_list <- c("independence", "exchangeable", "ar1", "unstructured")
+qic_results <- data.frame(
+  Correlation = character(),
+  QIC = numeric(),
+  QICu = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (corstr in corstr_list) {
+  tryCatch({
+    model <- geeglm(
+      math ~ time + fs_scale + time:fs_scale + fs_baseline + 
+             time:fs_baseline + ses_baseline + sex, # adjust 
+      data = gee_data,
+      id = childid,
+      family = gaussian,
+      corstr = corstr,
+      std.err = "san.se"  # Robust standard errors
+    )
+    
+    qic_val <- QIC(model)
+    qic_results <- rbind(qic_results, data.frame(
+      Correlation = corstr,
+      QIC = round(qic_val[1], 2),
+      QICu = round(qic_val[2], 2)
+    ))
+    
+    cat(sprintf("%-15s: QIC = %.2f, QICu = %.2f\n", corstr, qic_val[1], qic_val[2]))
+  }, error = function(e) {
+    cat(sprintf("%-15s: Failed to converge\n", corstr))
+  })
+}
+
+cat("\nBest model: ", qic_results$Correlation[which.min(qic_results$QIC)], 
+    " (lowest QIC)\n")
+best_corstr <- qic_results$Correlation[which.min(qic_results$QIC)]
+```
+
+## Visualizations
+```{r}
+col_point <- "gray60"
+col_main  <- "#1F78B4"
+col_alt   <- "#E31A1C"
+col_mid1  <- "#33A02C"
+col_mid2  <- "#FF7F00"
+
+viz_data <- ecls[!is.na(math) & !is.na(fs_scale) & !is.na(time) &
+                 !is.na(ses_baseline) & !is.na(sex) & !is.na(fs_baseline)]
+
+# Plot 1A: Overall trajectory (linear + quadratic)
+p1a <- ggplot(viz_data, aes(x = time, y = math)) +
+  geom_point(alpha = 0.1, size = 0.5, color = col_point) +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2),
+              se = TRUE, color = col_main, linewidth = 1.5) +
+  geom_smooth(method = "lm", formula = y ~ x,
+              se = FALSE, color = col_alt, linetype = "dashed", linewidth = 1) +
+  scale_x_continuous(breaks = 0:2, labels = c("K","1st","5th")) +
+  labs(title = "Overall Math Trajectory: Quadratic vs Linear Growth",
+       subtitle = "Blue = quadratic; Red dashed = linear",
+       x = "Time Point", y = "Mathematics Score") +
+  theme_minimal(base_size = 12)
+
+# Plot 1B: Individual trajectories
+set.seed(653)
+sample_ids <- sample(unique(viz_data$childid), 50)
+
+p1b <- ggplot(viz_data[childid %in% sample_ids],
+              aes(x = time, y = math, group = childid)) +
+  geom_line(alpha = 0.3, color = col_point) +
+  geom_point(alpha = 0.6, size = 1, color = col_point) +
+  geom_smooth(aes(group = NULL), method = "lm", formula = y ~ x + I(x^2),
+              se = TRUE, color = col_main, linewidth = 2) +
+  scale_x_continuous(breaks = 0:2, labels = c("K","1st","5th")) +
+  labs(title = "Individual Growth Trajectories (50 random children)",
+       x = "Time Point", y = "Mathematics Score") +
+  theme_minimal(base_size = 12)
+
+# Plot 2A: FS Scale distribution
+p2a <- ggplot(viz_data, aes(x = fs_scale)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = col_main, alpha = 0.6, color = "white") +
+  geom_density(color = col_alt, linewidth = 1.2) +
+  facet_wrap(~time, labeller = labeller(time =
+    c("0" = "Kindergarten", "1" = "1st Grade", "2" = "5th Grade"))) +
+  labs(title = "Food Security Scale Distribution by Time",
+       x = "Food Security Scale", y = "Density") +
+  theme_minimal(base_size = 12)
+
+
+# Plot 2B: FS Scale vs Math
+p2b <- ggplot(viz_data, aes(x = fs_scale, y = math)) +
+  geom_point(alpha = 0.1, size = 0.8, color = col_point) +
+  geom_smooth(method = "lm", se = TRUE, color = col_main, linewidth = 1.5) +
+  facet_wrap(~time, labeller = labeller(time =
+    c("0" = "Kindergarten","1"="1st Grade","2"="5th Grade"))) +
+  labs(title = "Food Security Scale vs Math Achievement",
+       x = "Food Security Scale", y = "Mathematics Score") +
+  theme_minimal(base_size = 12)
+
+# Plot 3A: SES baseline distribution
+p3a <- ggplot(viz_data, aes(x = ses_baseline)) +
+  geom_histogram(bins = 40, fill = col_main, alpha = 0.6, color = "white") +
+  geom_vline(xintercept = median(viz_data$ses_baseline, na.rm = TRUE),
+             linetype = "dashed", color = col_alt, linewidth = 1) +
+  labs(title = "SES Baseline Distribution",
+       subtitle = "Red dashed line = median",
+       x = "SES Composite Score", y = "Count") +
+  theme_minimal(base_size = 12)
+
+# Plot 3B: SES vs Math
+p3b <- ggplot(viz_data, aes(x = ses_baseline, y = math)) +
+  geom_point(alpha = 0.05, size = 0.5, color = col_point) +
+  geom_smooth(method = "lm", se = TRUE, color = col_main, linewidth = 1.5) +
+  facet_wrap(~time, labeller = labeller(time =
+    c("0"="Kindergarten","1"="1st Grade","2"="5th Grade"))) +
+  labs(title = "SES vs Math Achievement Over Time",
+       x = "SES Baseline", y = "Mathematics Score") +
+  theme_minimal(base_size = 12)
+
+
+# Plot 3C: Trajectories by SES quartiles
+viz_data[, ses_quartile_viz := cut(
+  ses_baseline,
+  breaks = quantile(ses_baseline, probs = 0:4/4, na.rm = TRUE),
+  labels = c("Q1 (Lowest)","Q2","Q3","Q4 (Highest)"),
+  include.lowest = TRUE)]
+
+p3c <- ggplot(viz_data[!is.na(ses_quartile_viz)],
+              aes(x = time, y = math, color = ses_quartile_viz,
+                  fill = ses_quartile_viz)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "ribbon", alpha = 0.15, color = NA) +
+  scale_color_manual(values = c(col_alt, col_mid2, col_mid1, col_main)) +
+  scale_fill_manual(values  = c(col_alt, col_mid2, col_mid1, col_main)) +
+  scale_x_continuous(breaks = 0:2, labels = c("K","1st","5th")) +
+  labs(title = "Math Trajectories by SES Quartile",
+       x = "Time Point", y = "Mean Mathematics Score") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+
+
+# Plot 4: Trajectories by sex
+p4 <- ggplot(viz_data[!is.na(sex)],
+             aes(x = time, y = math, color = sex, fill = sex)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "ribbon", alpha = 0.15, color = NA) +
+  scale_color_manual(values = c("Male" = col_main, "Female" = col_alt)) +
+  scale_fill_manual(values  = c("Male" = col_main, "Female" = col_alt)) +
+  scale_x_continuous(breaks = 0:2, labels = c("K","1st","5th")) +
+  labs(title = "Math Trajectories by Sex",
+       x = "Time Point", y = "Mean Mathematics Score") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+
+
+# Plot 5: Three-way interaction
+viz_data[, fs_binary :=
+           ifelse(fs_scale > median(fs_scale, na.rm = TRUE),
+                  "Higher Insecurity","Lower Insecurity")]
+viz_data[, ses_binary :=
+           ifelse(ses_baseline > median(ses_baseline, na.rm = TRUE),
+                  "Higher SES","Lower SES")]
+
+p5 <- ggplot(viz_data[!is.na(fs_binary) & !is.na(ses_binary)],
+             aes(x = time, y = math, color = fs_binary, fill = fs_binary)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "ribbon", alpha = 0.15, color = NA) +
+  facet_wrap(~ses_binary) +
+  scale_color_manual(values = c("Lower Insecurity" = col_main,
+                                "Higher Insecurity" = col_alt)) +
+  scale_fill_manual(values = c("Lower Insecurity" = col_main,
+                               "Higher Insecurity" = col_alt)) +
+  scale_x_continuous(breaks = 0:2, labels = c("K","1st","5th")) +
+  labs(title = "Time × Food Security × SES Interaction",
+       x = "Time Point", y = "Mean Mathematics Score") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+print(p1a)
+print(p1b)
+print(p2a)
+print(p2b)
+print(p3a)
+print(p3b)
+print(p3c)
+print(p4)
+print(p5)
+```
+
+
+
+## Main Effect Model: Mathematics Achievement
+
+```{r main-model-math}
+# Fit main effects model with best correlation structure
+model_math_main <- geeglm(
+  math ~ time + I(time^2) +  
+         fs_scale + time:fs_scale +  # Time-varying FS effect
+         fs_baseline + time:fs_baseline +  # Baseline FS effect
+         ses_baseline + sex,  # Demographics
+  data = gee_data,
+  id = childid,
+  family = gaussian,
+  corstr = best_corstr,
+  std.err = "san.se"
+)
+
+# Extract and format coefficients
+coef_table <- summary(model_math_main)$coefficients
+coef_df <- data.frame(
+  Term = rownames(coef_table),
+  Estimate = round(coef_table[, "Estimate"], 3),
+  SE = round(coef_table[, "Std.err"], 3),
+  Z = round(coef_table[, "Wald"], 2),
+  P_value = format.pval(coef_table[, "Pr(>|W|)"], digits = 3, eps = 0.001)
+)
+
+cat("\n\nFormatted Coefficients:\n")
+print(kable(coef_df, row.names = FALSE, caption = "Main Effects Model: Mathematics"))
+
+# Interpretation of key coefficients
+cat("\n\nKEY FINDINGS:\n")
+cat(rep("=", 60), "\n", sep="")
+fs_scale_coef <- coef_table["fs_scale", "Estimate"]
+fs_time_coef <- coef_table["time:fs_scale", "Estimate"]
+fs_baseline_coef <- coef_table["fs_baseline", "Estimate"]
+
+cat(sprintf("1. Time-varying FS effect: %.3f (p = %s)\n", 
+            fs_scale_coef, format.pval(coef_table["fs_scale", "Pr(>|W|)"], digits = 3)))
+cat(sprintf("   Interpretation: 1-unit increase in FS scale → %.3f point change in math\n\n", 
+            fs_scale_coef))
+
+cat(sprintf("2. FS * Time interaction: %.3f (p = %s)\n", 
+            fs_time_coef, format.pval(coef_table["time:fs_scale", "Pr(>|W|)"], digits = 3)))
+cat(sprintf("   Interpretation: FS effect on math growth rate per wave\n\n"))
+
+cat(sprintf("3. Baseline FS effect: %.3f (p = %s)\n", 
+            fs_baseline_coef, format.pval(coef_table["fs_baseline", "Pr(>|W|)"], digits = 3)))
+cat(sprintf("   Interpretation: Between-child differences in baseline FS\n"))
+```
+
+## Main Effect Model: Science Achievement
+
+```{r main-model-science}
+gee_data_sci <- ecls[!is.na(science) & !is.na(fs_scale) & !is.na(time) & 
+                     !is.na(ses_baseline) & !is.na(sex) & !is.na(fs_baseline)]
+gee_data_sci <- gee_data_sci[order(childid, time)]
+
+# Fit science model
+model_science_main <- geeglm(
+  science ~ time + I(time^2) + 
+            fs_scale + time:fs_scale + 
+            fs_baseline + time:fs_baseline + 
+            ses_baseline + sex,
+  data = gee_data_sci,
+  id = childid,
+  family = gaussian,
+  corstr = best_corstr,
+  std.err = "san.se"
+)
+
+cat("Model Summary:\n")
+print(summary(model_science_main))
+
+# Extract coefficients
+coef_table_sci <- summary(model_science_main)$coefficients
+coef_df_sci <- data.frame(
+  Term = rownames(coef_table_sci),
+  Estimate = round(coef_table_sci[, "Estimate"], 3),
+  SE = round(coef_table_sci[, "Std.err"], 3),
+  Z = round(coef_table_sci[, "Wald"], 2),
+  P_value = format.pval(coef_table_sci[, "Pr(>|W|)"], digits = 3, eps = 0.001)
+)
+
+cat("\n\nFormatted Coefficients:\n")
+print(kable(coef_df_sci, row.names = FALSE, caption = "Main Effects Model: Science"))
+```
+
+---
+
+# 4. Moderation Analysis by Socioeconomic Status
+
+## SES Moderation: Mathematics
+
+```{r moderation-math}
+cat("MODERATION ANALYSIS: SES * FOOD SECURITY (MATHEMATICS)\n")
+
+# Prepare data with SES quartiles
+gee_data_mod <- ecls[!is.na(math) & !is.na(fs_scale) & !is.na(time) & 
+                     !is.na(ses_quartile) & !is.na(ses_baseline) & !is.na(sex) & !is.na(fs_baseline)]
+gee_data_mod <- gee_data_mod[order(childid, time)]
+
+# Fit moderation model
+model_math_mod <- geeglm(
+  math ~ time + I(time^2) + 
+         fs_scale * ses_quartile +  # FS * SES interaction
+         time:fs_scale * ses_quartile +  # Three-way: Time * FS * SES
+         fs_baseline * ses_quartile +
+         sex,
+  data = gee_data_mod,
+  id = childid,
+  family = gaussian,
+  corstr = best_corstr,
+  std.err = "san.se"
+)
+
+cat("Moderation Model Summary:\n")
+print(summary(model_math_mod))
+
+# Extract interaction coefficients
+coef_table_mod <- summary(model_math_mod)$coefficients
+interaction_terms <- grep("fs_scale.*ses_quartile|time:fs_scale.*ses_quartile", 
+                          rownames(coef_table_mod), value = TRUE)
+
+cat("\n\nKey Interaction Terms:\n")
+interaction_df <- data.frame(
+  Term = interaction_terms,
+  Estimate = round(coef_table_mod[interaction_terms, "Estimate"], 3),
+  SE = round(coef_table_mod[interaction_terms, "Std.err"], 3),
+  P_value = format.pval(coef_table_mod[interaction_terms, "Pr(>|W|)"], 
+                        digits = 3, eps = 0.001)
+)
+print(kable(interaction_df, row.names = FALSE))
+
+cat("\n\nINTERPRETATION:\n")
+cat("- Negative interactions indicate stronger FS effects in lower SES groups\n")
+cat("- Positive interactions indicate weaker FS effects in lower SES groups\n")
+```
+
+## Food security effect by SES quatiles
+
+```{r simple-slopes}
+cat("SIMPLE SLOPES: FOOD SECURITY EFFECT BY SES QUARTILE\n")
+
+# Calculate simple slopes for each SES quartile
+# manual calculation from the interaction model
+
+# base coefficient
+base_fs <- coef(model_math_mod)["fs_scale"]
+# interaction coefficients
+int_q2 <- ifelse("fs_scale:ses_quartileQ2" %in% names(coef(model_math_mod)),
+                 coef(model_math_mod)["fs_scale:ses_quartileQ2"], 0)
+int_q3 <- ifelse("fs_scale:ses_quartileQ3" %in% names(coef(model_math_mod)),
+                 coef(model_math_mod)["fs_scale:ses_quartileQ3"], 0)
+int_q4 <- ifelse("fs_scale:ses_quartileQ4_Highest" %in% names(coef(model_math_mod)),
+                 coef(model_math_mod)["fs_scale:ses_quartileQ4_Highest"], 0)
+
+# Calculate simple slopes
+slopes <- data.frame(
+  SES_Quartile = c("Q1 (Lowest)", "Q2", "Q3", "Q4 (Highest)"),
+  FS_Effect = round(c(base_fs, base_fs + int_q2, base_fs + int_q3, base_fs + int_q4), 3)
+)
+
+cat("\nSimple Slopes (Food Security Effect on Math by SES):\n")
+print(kable(slopes, row.names = FALSE))
+
+cat("\nNote: These represent the effect of a 1-unit increase in food security scale\n")
+cat("on mathematics scores for children in each SES quartile.\n")
+```
+
+---
+
+# 5. Sensitivity Analyses
+
+## Alternative Correlation Structure Comparison
+
+```{r sensitivity-correlation}
+cat("SENSITIVITY ANALYSIS: COMPARING CORRELATION STRUCTURES\n")
+
+# Fit different structures and compare key estimates
+corstr_comparison <- data.frame(
+  Correlation = character(),
+  FS_Effect = numeric(),
+  FS_Time_Int = numeric(),
+  FS_SE = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (corstr in c("independence", "exchangeable", "ar1")) {
+  tryCatch({
+    model_temp <- geeglm(
+      math ~ time + fs_scale + time:fs_scale + fs_baseline + ses_baseline + sex,
+      data = gee_data,
+      id = childid,
+      family = gaussian,
+      corstr = corstr,
+      std.err = "san.se"
+    )
+    
+    coefs <- summary(model_temp)$coefficients
+    corstr_comparison <- rbind(corstr_comparison, data.frame(
+      Correlation = corstr,
+      FS_Effect = round(coefs["fs_scale", "Estimate"], 3),
+      FS_Time_Int = round(coefs["time:fs_scale", "Estimate"], 3),
+      FS_SE = round(coefs["fs_scale", "Std.err"], 3)
+    ))
+  }, error = function(e) {
+    cat(sprintf("%s: Failed\n", corstr))
+  })
+}
+
+cat("Coefficient Stability Across Correlation Structures:\n")
+print(kable(corstr_comparison, row.names = FALSE))
+
+cat("\n\nInterpretation: If estimates are similar across structures,\n")
+cat("results are robust to correlation assumptions.\n")
+```
+
+---
+
+# 6. Visualizations
+
+## 6.1 Growth Trajectories by Food Security Status
+
+```{r viz-trajectories, fig.width=12, fig.height=6}
+# Calculate observed means by wave and FS status
+gee_data_cat <- ecls[!is.na(math) & !is.na(fs_status_factor) & !is.na(time) & 
+                     !is.na(ses_baseline) & !is.na(sex)]
+gee_data_cat <- gee_data_cat[order(childid, time)]
+
+obs_patterns <- gee_data_cat[, .(
+  Mean_Math = mean(math, na.rm = TRUE),
+  SE = sd(math, na.rm = TRUE) / sqrt(.N),
+  N = .N
+), by = .(time, fs_status_factor)]
+
+# Create plot
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 2))
+
+# Mathematics trajectories
+plot(NULL, xlim = c(0, 2), ylim = c(30, 130),
+     xlab = "Time (0=K, 1=1st, 2=5th)", ylab = "Mathematics Score",
+     main = "Math Achievement Growth by Food Security Status",
+     xaxt = "n")
+axis(1, at = 0:2, labels = c("Kindergarten", "1st Grade", "5th Grade"))
+
+colors <- c("darkgreen", "orange", "red")
+fs_levels <- c("High/Marginal", "Low", "Very Low")
+
+for (i in seq_along(fs_levels)) {
+  fs_level <- fs_levels[i]
+  subset_data <- obs_patterns[fs_status_factor == fs_level]
+  
+  lines(subset_data$time, subset_data$Mean_Math, col = colors[i], lwd = 2)
+  points(subset_data$time, subset_data$Mean_Math, col = colors[i], pch = 19, cex = 1.5)
+  
+  # Add error bars
+  arrows(subset_data$time, subset_data$Mean_Math - subset_data$SE,
+         subset_data$time, subset_data$Mean_Math + subset_data$SE,
+         code = 3, angle = 90, length = 0.05, col = colors[i])
+}
+
+legend("topleft", legend = fs_levels, col = colors, lwd = 2, pch = 19, bty = "n")
+grid()
+
+# Science trajectories
+obs_patterns_sci <- ecls[!is.na(science) & !is.na(fs_status_factor), .(
+  Mean_Science = mean(science, na.rm = TRUE),
+  SE = sd(science, na.rm = TRUE) / sqrt(.N),
+  N = .N
+), by = .(time, fs_status_factor)]
+
+plot(NULL, xlim = c(0, 2), ylim = c(20, 90),
+     xlab = "Time (0=K, 1=1st, 2=5th)", ylab = "Science Score",
+     main = "Science Achievement Growth by Food Security Status",
+     xaxt = "n")
+axis(1, at = 0:2, labels = c("Kindergarten", "1st Grade", "5th Grade"))
+
+for (i in seq_along(fs_levels)) {
+  fs_level <- fs_levels[i]
+  subset_data <- obs_patterns_sci[fs_status_factor == fs_level]
+  
+  lines(subset_data$time, subset_data$Mean_Science, col = colors[i], lwd = 2)
+  points(subset_data$time, subset_data$Mean_Science, col = colors[i], pch = 19, cex = 1.5)
+  
+  arrows(subset_data$time, subset_data$Mean_Science - subset_data$SE,
+         subset_data$time, subset_data$Mean_Science + subset_data$SE,
+         code = 3, angle = 90, length = 0.05, col = colors[i])
+}
+
+legend("topleft", legend = fs_levels, col = colors, lwd = 2, pch = 19, bty = "n")
+grid()
+```
+
+## 6.2 SES Moderation Effect Visualization
+
+```{r viz-moderation, fig.width=10, fig.height=6}
+# Calculate observed means by SES quartile and FS
+mod_patterns <- gee_data_mod[, .(
+  Mean_Math = mean(math, na.rm = TRUE),
+  Mean_FS = mean(fs_scale, na.rm = TRUE),
+  N = .N
+), by = .(ses_quartile, time)]
+
+# Create moderation plot
+par(mfrow = c(1, 1), mar = c(5, 4, 3, 2))
+
+plot(NULL, xlim = c(0, 2), ylim = c(40, 130),
+     xlab = "Time (0=K, 1=1st, 2=5th)", ylab = "Mathematics Score",
+     main = "Math Achievement Growth by SES Quartile",
+     xaxt = "n")
+axis(1, at = 0:2, labels = c("Kindergarten", "1st Grade", "5th Grade"))
+
+ses_colors <- c("red", "orange", "lightblue", "darkblue")
+ses_levels <- c("Q1_Lowest", "Q2", "Q3", "Q4_Highest")
+
+for (i in seq_along(ses_levels)) {
+  ses_level <- ses_levels[i]
+  subset_data <- mod_patterns[ses_quartile == ses_level]
+  
+  lines(subset_data$time, subset_data$Mean_Math, col = ses_colors[i], lwd = 2)
+  points(subset_data$time, subset_data$Mean_Math, col = ses_colors[i], pch = 19, cex = 1.5)
+}
+
+legend("topleft", legend = c("Q1 (Lowest SES)", "Q2", "Q3", "Q4 (Highest SES)"),
+       col = ses_colors, lwd = 2, pch = 19, bty = "n")
+grid()
+
+# This plot shows how achievement trajectories differ by SES, illustrating the context for SES moderation of food security effects.
+```
+
+---
+
+# 6.3 Mediation Analysis: Teacher-Child Relationship
+
+## Overview 
+
+**Mediation Pathway:**
+```
+Food Insecurity → Teacher-Child Relationship → Academic Achievement
+     (X)                    (M)                        (Y)
+```
+
+**Theoretical Basis:**
+- Food insecurity increases family stress and child behavioral difficulties
+- These difficulties may strain teacher-child relationships  
+- Poor relationships may contribute to lower achievement
+
+```{r mediation-framework}
+cat("\n", rep("=", 80), "\n", sep="")
+cat("MEDIATION ANALYSIS FRAMEWORK\n")
+cat(rep("=", 80), "\n\n", sep="")
+
+cat("THREE-STEP MEDIATION APPROACH (Baron & Kenny, 1986):\n\n")
+cat("Step 1: Total Effect (c)\n")
+cat("  Math ~ Food_Security + Covariates\n")
+cat("  Tests: Does X (FS) predict Y (Math)?\n\n")
+
+cat("Step 2: Path a\n")
+cat("  Teacher_Relationship ~ Food_Security + Covariates\n") 
+cat("  Tests: Does X (FS) predict M (Teacher Relationship)?\n\n")
+
+cat("Step 3: Paths b and c'\n")
+cat("  Math ~ Food_Security + Teacher_Relationship + Covariates\n")
+cat("  Tests: Does M predict Y? Is X→Y reduced?\n\n")
+
+# TODO
+```
+
+
+
+
+
+
+
