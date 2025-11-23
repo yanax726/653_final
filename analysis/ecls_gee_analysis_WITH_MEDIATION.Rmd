@@ -236,8 +236,10 @@ qic_results <- data.frame(
 for (corstr in corstr_list) {
   tryCatch({
     model <- geeglm(
-      math ~ time + fs_scale + time:fs_scale + fs_baseline + 
-             time:fs_baseline + ses_baseline + sex, # adjust 
+      math ~ time + I(time^2) +  
+         fs_scale + time:fs_scale +  # Time-varying FS effect
+         fs_baseline + time:fs_baseline +  # Baseline FS effect
+         ses_baseline + sex, # adjust 
       data = gee_data,
       id = childid,
       family = gaussian,
@@ -418,8 +420,6 @@ print(p4)
 print(p5)
 ```
 
-
-
 ## Main Effect Model: Mathematics Achievement
 
 ```{r main-model-math}
@@ -435,6 +435,9 @@ model_math_main <- geeglm(
   corstr = best_corstr,
   std.err = "san.se"
 )
+
+cat("Model Summary:\n")
+print(summary(model_math_main))
 
 # Extract and format coefficients
 coef_table <- summary(model_math_main)$coefficients
@@ -469,6 +472,213 @@ cat(sprintf("3. Baseline FS effect: %.3f (p = %s)\n",
             fs_baseline_coef, format.pval(coef_table["fs_baseline", "Pr(>|W|)"], digits = 3)))
 cat(sprintf("   Interpretation: Between-child differences in baseline FS\n"))
 ```
+```{r}
+gee_data_clean <- copy(gee_data)
+
+# Race: Collapse small categories
+gee_data_clean[, race_simple := fcase(
+  race %in% c("1", "1:WHITE, NON-HISPANIC"), "White",
+  race %in% c("2", "2:BLACK OR AFRICAN AMERICAN, NON-HISPANIC"), "Black",
+  race %in% c("3", "3:HISPANIC, RACE SPECIFIED"), "Hispanic",
+  race %in% c("4", "4:HISPANIC, RACE NOT SPECIFIED"), "Hispanic",
+  race %in% c("5", "5:ASIAN"), "Asian",
+  default = "Other"  # Combine all others
+)]
+gee_data_clean[, race_simple := factor(race_simple, 
+                                        levels = c("White", "Black", "Hispanic", "Asian", "Other"))]
+
+# School type: Simplify if needed
+gee_data_clean[, school_simple := fcase(
+  grepl("PUBLIC", school_type, ignore.case = TRUE), "Public",
+  grepl("PRIVATE|CATHOLIC", school_type, ignore.case = TRUE), "Private",
+  default = "Other"
+)]
+gee_data_clean[, school_simple := factor(school_simple, levels = c("Public", "Private", "Other"))]
+
+# Urbanicity: Simplify
+gee_data_clean[, urban_simple := fcase(
+  grepl("CITY|URBAN", urbanicity, ignore.case = TRUE), "Urban",
+  grepl("SUBURB", urbanicity, ignore.case = TRUE), "Suburban",
+  grepl("TOWN|RURAL", urbanicity, ignore.case = TRUE), "Rural",
+  default = "Other"
+)]
+gee_data_clean[, urban_simple := factor(urban_simple, 
+                                         levels = c("Urban", "Suburban", "Rural", "Other"))]
+
+# Disability: Already binary (Yes/No)
+# Sex: Already binary (Male/Female)
+
+# Check simplified distributions
+cat("\nSimplified Race:\n")
+print(table(gee_data_clean$race_simple))
+cat("\nSimplified School:\n")
+print(table(gee_data_clean$school_simple))
+cat("\nSimplified Urban:\n")
+print(table(gee_data_clean$urban_simple))
+
+# Try model with simplified variables
+model_math_main <- geeglm(
+  math ~ time + I(time^2) +  
+         fs_scale + time:fs_scale +
+         fs_baseline + time:fs_baseline +
+         ses_baseline + sex + 
+         race_simple + disability + household_size + urban_simple,
+  data = gee_data_clean,
+  id = childid,
+  family = gaussian,
+  corstr = best_corstr,
+  std.err = "san.se"
+)
+
+summary(model_math_main)
+```
+```{r}
+# ============================================================================
+# GEE MODEL DIAGNOSTICS
+# ============================================================================
+
+library(ggplot2)
+library(data.table)
+
+cat("\n", rep("=", 80), "\n", sep="")
+cat("COMPREHENSIVE GEE MODEL DIAGNOSTICS\n")
+cat(rep("=", 80), "\n\n", sep="")
+
+# ----------------------------------------------------------------------------
+# 1. MODEL SUMMARY AND FIT STATISTICS
+# ----------------------------------------------------------------------------
+
+# Sample size information
+cat("Sample Size:\n")
+cat("  Total observations:", nrow(model_math_main$data), "\n")
+cat("  Number of clusters (children):", length(unique(model_math_main$id)), "\n")
+cat("  Average obs per child:", 
+    round(nrow(model_math_main$data) / length(unique(model_math_main$id)), 2), "\n")
+cat("  Max cluster size:", max(table(model_math_main$id)), "\n\n")
+
+# Working correlation structure
+cat("Working Correlation Structure:", model_math_main$corstr, "\n")
+if (model_math_main$corstr != "independence") {
+  cat("Estimated correlation parameter(s):\n")
+  print(model_math_main$geese$alpha)
+}
+
+# ----------------------------------------------------------------------------
+# 2. RESIDUAL DIAGNOSTICS
+# ----------------------------------------------------------------------------
+
+cat("\n\n3. RESIDUAL DIAGNOSTICS\n")
+cat(rep("-", 60), "\n", sep="")
+
+# Extract residuals
+residuals <- residuals(model_math_main, type = "pearson")
+fitted_values <- fitted(model_math_main)
+
+# Add to data for plotting
+diag_data <- data.table(
+  fitted = fitted_values,
+  residuals = residuals,
+  childid = model_math_main$id,
+  time = gee_data_clean[!is.na(math) & !is.na(fs_scale) & !is.na(time) & 
+                        !is.na(ses_baseline) & !is.na(sex) & !is.na(fs_baseline) &
+                        !is.na(race_simple) & !is.na(disability) & !is.na(household_size) &
+                        !is.na(urban_simple)]$time
+)
+
+# Residual summary statistics
+cat("Residual Summary Statistics:\n")
+cat("  Mean:", round(mean(residuals, na.rm = TRUE), 4), 
+    " (should be ≈ 0)\n")
+cat("  Std Dev:", round(sd(residuals, na.rm = TRUE), 3), "\n")
+cat("  Min:", round(min(residuals, na.rm = TRUE), 3), "\n")
+cat("  Max:", round(max(residuals, na.rm = TRUE), 3), "\n")
+cat("  IQR:", round(IQR(residuals, na.rm = TRUE), 3), "\n\n")
+
+# Check for outliers (|residual| > 3)
+outliers <- sum(abs(residuals) > 3, na.rm = TRUE)
+cat("Observations with |residual| > 3:", outliers, 
+    "(", round(100 * outliers / length(residuals), 2), "%)\n\n")
+
+# ----------------------------------------------------------------------------
+# 3. RESIDUAL PLOTS
+# ----------------------------------------------------------------------------
+
+# Set up plotting area
+par(mfrow = c(2, 3), mar = c(4, 4, 2, 1))
+
+# Plot 1: Residuals vs Fitted
+plot(fitted_values, residuals, 
+     xlab = "Fitted Values", ylab = "Pearson Residuals",
+     main = "Residuals vs Fitted",
+     pch = 20, col = rgb(0, 0, 0, 0.3))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+abline(h = c(-2, 2), col = "blue", lwd = 1, lty = 2)
+lowess_fit <- lowess(fitted_values, residuals)
+lines(lowess_fit, col = "darkgreen", lwd = 2)
+legend("topright", c("Zero line", "±2 SD", "Lowess"), 
+       col = c("red", "blue", "darkgreen"), 
+       lty = c(2, 2, 1), lwd = 2, cex = 0.7)
+
+# Plot 2: QQ-plot
+qqnorm(residuals, main = "Normal Q-Q Plot",
+       pch = 20, col = rgb(0, 0, 0, 0.3))
+qqline(residuals, col = "red", lwd = 2)
+
+# Plot 3: Scale-Location (sqrt of standardized residuals)
+sqrt_abs_resid <- sqrt(abs(residuals))
+plot(fitted_values, sqrt_abs_resid,
+     xlab = "Fitted Values", ylab = "√|Pearson Residuals|",
+     main = "Scale-Location Plot",
+     pch = 20, col = rgb(0, 0, 0, 0.3))
+lowess_fit2 <- lowess(fitted_values, sqrt_abs_resid)
+lines(lowess_fit2, col = "red", lwd = 2)
+
+# Plot 4: Residuals by Time
+plot(diag_data$time, residuals,
+     xlab = "Time", ylab = "Pearson Residuals",
+     main = "Residuals by Time",
+     pch = 20, col = rgb(0, 0, 0, 0.3))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+# Add means by time
+time_means <- tapply(residuals, diag_data$time, mean, na.rm = TRUE)
+points(as.numeric(names(time_means)), time_means, 
+       col = "blue", pch = 19, cex = 1.5)
+lines(as.numeric(names(time_means)), time_means, 
+      col = "blue", lwd = 2)
+
+# Plot 5: Histogram of Residuals
+hist(residuals, breaks = 50, 
+     main = "Distribution of Residuals",
+     xlab = "Pearson Residuals", col = "lightblue", border = "white")
+curve(dnorm(x, mean = mean(residuals, na.rm = TRUE), 
+            sd = sd(residuals, na.rm = TRUE)) * 
+        length(residuals) * diff(range(residuals, na.rm = TRUE)) / 50,
+      add = TRUE, col = "red", lwd = 2)
+legend("topright", "Normal curve", col = "red", lty = 1, lwd = 2)
+
+# Plot 6: Residuals vs Predicted (by child - check within-cluster)
+# Sample some children for clarity
+set.seed(653)
+sample_ids <- sample(unique(diag_data$childid), min(30, length(unique(diag_data$childid))))
+plot_data <- diag_data[childid %in% sample_ids]
+
+plot(plot_data$time, plot_data$residuals, type = "n",
+     xlab = "Time", ylab = "Residuals",
+     main = "Within-Child Residual Patterns (30 children)")
+for (id in sample_ids) {
+  child_data <- plot_data[childid == id]
+  lines(child_data$time, child_data$residuals, 
+        col = rgb(0, 0, 0, 0.3), lwd = 0.5)
+  points(child_data$time, child_data$residuals, 
+         pch = 20, col = rgb(0, 0, 0, 0.3), cex = 0.7)
+}
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+
+# Reset plotting parameters
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 2))
+
+```
+
 
 ## Main Effect Model: Science Achievement
 
